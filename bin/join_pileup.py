@@ -32,6 +32,8 @@ def import_df(file_name, suffix):
     return df
 
 
+from concurrent.futures import ThreadPoolExecutor
+
 def combine_files(*files):
     suffixes = [
         "unfiltered_uniq",
@@ -39,13 +41,18 @@ def combine_files(*files):
         "filtered_uniq",
         "filtered_multi",
     ]
-    f = files[0]
-    s = suffixes[0]
-    df_com = import_df(f, s)
-    for f, s in zip(files[1:], suffixes[1:]):
-        df = import_df(f, s)
-        df_com = df_com.join(df, on=["ref", "pos", "strand"], how="outer_coalesce")
-    return df_com.fill_null(0)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        dfs = list(executor.map(import_df, files, suffixes))
+
+    do_join = lambda left, right: left.join(right, on=["ref", "pos", "strand"], how="outer_coalesce")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(do_join, dfs[0], dfs[1]),
+            executor.submit(do_join, dfs[2], dfs[3]),
+        ]
+        temp1, temp2 = [f.result() for f in futures]
+    return do_join(temp1, temp2).fill_null(0)
 
 
 if __name__ == "__main__":
@@ -63,4 +70,4 @@ if __name__ == "__main__":
     args = arg_parser.parse_args()
 
     # Write the combined DataFrame to a CSV file
-    combine_files(*args.input_files).write_ipc(args.output_file, compression="lz4")
+    combine_files(*args.input_files).write_ipc(args.output_file, compression=None)
